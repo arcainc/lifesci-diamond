@@ -1,0 +1,6 @@
+node_modules/
+.env
+.env.*
+# Run output. results/samples/ is checked in.
+results/*
+!results/samples/
