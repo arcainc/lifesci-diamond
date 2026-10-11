@@ -5,4 +5,4 @@ from before the change stay comparable.
 
 ## v1.0 (2026-10-10)
 
-First public release: harness, LLM-jury scorer and 10 of the 34 tasks.
+First public release: harness, LLM-jury scorer and 10 of the 40 tasks.
