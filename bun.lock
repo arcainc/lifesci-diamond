@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "reg-affairs-bench",
+      "name": "lifesci-diamond",
       "dependencies": {
         "@anthropic-ai/sdk": "0.94.0",
         "zod": "4.3.6",
