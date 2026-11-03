@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 
+import { FAILURE_MODES } from "./types";
 import type { ExactCheck, Item, RubricLine, SystemRun, Usage } from "./types";
 
 const FactSchema = z.object({
@@ -42,6 +43,7 @@ export const ItemSchema: z.ZodType<Item> = z
     family: z.literal("tool-screen").exactOptional(),
     blockedReason: z.string().exactOptional(),
     retiredReason: z.string().exactOptional(),
+    failureMode: z.enum(FAILURE_MODES).exactOptional(),
     provenance: z.string(),
     canary: z.string(),
     systems: z.array(z.string()).exactOptional(),

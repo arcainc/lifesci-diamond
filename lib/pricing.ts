@@ -1,4 +1,4 @@
-// List prices in USD per token, as of 2026-09-22. Check them against
+// List prices in USD per token, as of 2026-10-13. Check them against
 // the providers' current rates before quoting costs. A model missing here
 // reports its cost as n/a; add a row to price it.
 

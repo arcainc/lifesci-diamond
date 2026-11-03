@@ -304,6 +304,11 @@ const ChatResponseSchema = z.looseObject({
 
 const ToolArgsSchema = z.record(z.string(), z.unknown());
 
+export function refusesToolChoiceNone(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("tool_choice") && message.includes("400");
+}
+
 export async function runOpenBaseline(params: {
   item: Item;
   model: string;
@@ -361,24 +366,38 @@ export async function runOpenBaseline(params: {
       // Without caching every step re-bills the whole growing transcript, which
       // made this loop cost ~$12 a task on Claude. The gateway adds the cache
       // markers Anthropic needs; OpenAI and DeepSeek cache on their own.
-      const body = await gatewayPost(
-        "/v1/chat/completions",
-        {
-          model,
-          messages,
-          tools,
-          tool_choice: lastStep ? "none" : "auto",
-          // A thought signature from one Google backend is invalid on the
-          // other, so a tool loop must stay on one.
-          providerOptions: {
-            gateway: {
-              caching: "auto",
-              ...(model.startsWith("google/") ? { only: ["vertex"] } : {}),
-            },
+      const chatRequest = (withTools: boolean) => ({
+        model,
+        messages,
+        ...(withTools
+          ? { tools, tool_choice: lastStep ? "none" : "auto" }
+          : {}),
+        // A thought signature from one Google backend is invalid on the
+        // other, so a tool loop must stay on one.
+        providerOptions: {
+          gateway: {
+            caching: "auto",
+            ...(model.startsWith("google/") ? { only: ["vertex"] } : {}),
           },
         },
-        ChatResponseSchema
-      );
+      });
+      let body;
+      try {
+        body = await gatewayPost(
+          "/v1/chat/completions",
+          chatRequest(true),
+          ChatResponseSchema
+        );
+      } catch (error) {
+        // Some models accept only tool_choice "auto". On the last step, ask
+        // again without tools so the model must answer in text.
+        if (!lastStep || !refusesToolChoiceNone(error)) throw error;
+        body = await gatewayPost(
+          "/v1/chat/completions",
+          chatRequest(false),
+          ChatResponseSchema
+        );
+      }
       const stepUsage = {
         inputTokens: body.usage?.prompt_tokens ?? 0,
         outputTokens: body.usage?.completion_tokens ?? 0,
