@@ -28,11 +28,11 @@ const PRICES: Record<string, ModelPricing> = {
     "cacheReadUsdPerToken": 0.000001,
     "cacheWriteUsdPerToken": 0.0000125
   },
-  "openai/gpt-5.6-sol": {
-    "inputUsdPerToken": 0.000005,
-    "outputUsdPerToken": 0.00003,
-    "cacheReadUsdPerToken": 5e-7,
-    "cacheWriteUsdPerToken": 0.00000625
+  "openai/gpt-6.1-sol": {
+    "inputUsdPerToken": 0.000002,
+    "outputUsdPerToken": 0.00001,
+    "cacheReadUsdPerToken": 1e-7,
+    "cacheWriteUsdPerToken": 0.0000025
   },
   "google/gemini-3.1-pro-preview": {
     "inputUsdPerToken": 0.000002,
@@ -55,11 +55,12 @@ const ALIASES: Record<string, string> = {
   "claude-5-sonnet": "anthropic/claude-sonnet-5",
   "anthropic/claude-5-sonnet": "anthropic/claude-sonnet-5",
   "gpt-6-astra": "openai/gpt-6-astra",
-  "gpt-5.6": "openai/gpt-5.6-sol",
-  "gpt-5-6": "openai/gpt-5.6-sol",
-  "gpt-5.6-sol": "openai/gpt-5.6-sol",
-  "gpt-5-6-sol": "openai/gpt-5.6-sol",
-  "openai/gpt-5.6": "openai/gpt-5.6-sol",
+  "gpt-6.1-sol": "openai/gpt-6.1-sol",
+  "gpt-6-1-sol": "openai/gpt-6.1-sol",
+  "gpt-6.1": "openai/gpt-6.1-sol",
+  "gpt-6-1": "openai/gpt-6.1-sol",
+  "openai/gpt-6.1": "openai/gpt-6.1-sol",
+  "openai/gpt-6-1-sol": "openai/gpt-6.1-sol",
   "gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview",
   "deepseek-v4-pro": "deepseek/deepseek-v4-pro",
   "deepseek-v4": "deepseek/deepseek-v4-pro"

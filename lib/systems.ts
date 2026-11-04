@@ -6,8 +6,8 @@ import { z } from "zod";
 
 import {
   anthropicClient,
+  benchPostJson,
   estimateUsd,
-  gatewayPost,
   gatewayReportedCost,
 } from "./llm";
 import {
@@ -372,7 +372,7 @@ export async function runOpenAI(params: {
       { type: "input_text", text: userText },
     ];
     input.push({ role: "user", content });
-    const body = await gatewayPost(
+    const body = await benchPostJson(
       "/v1/responses",
       {
         model,

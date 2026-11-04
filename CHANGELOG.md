@@ -17,4 +17,4 @@ settings and run dates.
 
 ## v1.0 (2026-10-10)
 
-First public release: harness, LLM-jury scorer and 10 of the 40 tasks.
+First public release: harness, LLM-jury scorer and 10 of the 55 tasks.

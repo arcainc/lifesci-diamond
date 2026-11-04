@@ -6,9 +6,11 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { estimateUsd } from "./lib/llm";
+import { DEFAULT_JURY } from "./lib/judges";
+import { estimateUsd, requireJudgeCredentials } from "./lib/llm";
 import { runOpenBaseline } from "./lib/open-baseline";
 import { estimateModelCost } from "./lib/pricing";
+import { gradingProvenance } from "./lib/provenance";
 import { type RunReport, writeReport } from "./lib/report";
 import {
   ItemSchema,
@@ -28,11 +30,6 @@ const DEFAULT_MODELS = [
 const DEFAULT_SYSTEMS = ["open-baseline", "openai", "anthropic"];
 const DEFAULT_ITEMS = ["all"];
 // One judge per vendor, similar price tier. The first also runs extraction.
-const DEFAULT_JURY = [
-  "anthropic/claude-sonnet-5",
-  "openai/gpt-5.6-sol",
-  "google/gemini-3.1-pro-preview",
-];
 
 type Args = {
   items: string[];
@@ -356,6 +353,9 @@ async function executeTask(
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  const generationDate = new Date().toISOString().slice(0, 10);
+  const knownAnswerDates = new WeakMap<SystemRun, string>();
+  if (args.judge && !args.dryRun) requireJudgeCredentials(args.judgeModels);
   const items = await loadItems(args.items, args.includeBlocked);
   const runId =
     args.runId ??
@@ -476,6 +476,8 @@ async function main() {
       console.log(`start  ${label}`);
       try {
         const run = await executeTask(task, systemPrompt);
+        if (task.base !== "chatgpt" && task.base !== "claude-app")
+          knownAnswerDates.set(run, generationDate);
         if (task.rep > 1) run.rep = task.rep;
         spent += run.costUsd ?? 0;
         runs.push(run);
@@ -523,13 +525,6 @@ async function main() {
 
   const scores: ItemScore[] = [];
   if (args.judge) {
-    // Without a gateway key every judge call fails and every line scores 0, so
-    // a whole run comes back zeroed and looks like a real result. Stop first.
-    if (!process.env.AI_GATEWAY_API_KEY?.trim()) {
-      throw new Error(
-        "AI_GATEWAY_API_KEY is not set, so nothing can be judged. Export it (or pass bun --env-file=<file>), or pass --no-judge."
-      );
-    }
     const libraryCache = new Map<
       string,
       Promise<{ file: string; text: string }[]>
@@ -552,6 +547,7 @@ async function main() {
         juryModels: args.judgeModels,
         juryMode: args.juryMode,
         library: await libraryFor(item),
+        answerDate: knownAnswerDates.get(run) ?? null,
       });
       scores.push(score);
       console.log(
@@ -564,6 +560,13 @@ async function main() {
     runId,
     createdAt: new Date().toISOString(),
     config: {
+      gradingProvenance: await gradingProvenance(items),
+      answerDates: runs.map((run) => ({
+        system: run.system,
+        itemId: run.itemId,
+        rep: run.rep ?? 1,
+        date: knownAnswerDates.get(run) ?? null,
+      })),
       items: items.map((item) => item.id),
       systems: args.systems,
       models: args.models,
@@ -578,6 +581,24 @@ async function main() {
     scores,
     runs: runs.map(({ turns: _turns, ...rest }) => rest),
     failures,
+    expected: args.rescore
+      ? [
+          ...runs.map((run) => ({
+            system: run.system,
+            itemId: run.itemId,
+            rep: run.rep ?? 1,
+          })),
+          ...failures.map((failure) => ({
+            system: failure.system,
+            itemId: failure.itemId,
+            rep: 1,
+          })),
+        ]
+      : planTasks(items, args).tasks.map((task) => ({
+          system: task.system,
+          itemId: task.item.id,
+          rep: task.rep,
+        })),
   };
   await mkdir(runDir, { recursive: true });
   const md = await writeReport(runDir, report, items);

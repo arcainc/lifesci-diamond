@@ -1,0 +1,2 @@
+# Captured model replies keep their original bytes and Markdown hard line breaks.
+results/samples/**/*.answer.md -text -whitespace
