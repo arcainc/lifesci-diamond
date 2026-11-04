@@ -17,13 +17,13 @@ import path from "node:path";
 import { z } from "zod";
 
 import {
+  benchPostJson,
   estimateUsd,
-  gatewayPost,
   gatewayReportedCost,
   WEB_SEARCH_USD,
 } from "./llm";
 import { readLibraryTexts, readResponseText } from "./text";
-import type { Item, SystemRun, Turn } from "./types";
+import type { Item, SystemRun, Turn, Usage } from "./types";
 import { addUsage, emptyUsage } from "./types";
 
 const MAX_STEPS = 40;
@@ -265,6 +265,49 @@ type ChatMessage = {
   tool_call_id?: string;
 };
 
+type TraceToolCall = { id: string; name: string; arguments: string };
+type TraceMessage = {
+  role: ChatMessage["role"];
+  content: string | null;
+  toolCalls: TraceToolCall[];
+  toolCallId: string | null;
+};
+export type OpenBaselineEvent =
+  | {
+      kind: "request";
+      turn: number;
+      step: number;
+      model: string;
+      messages: TraceMessage[];
+      toolChoice: "auto" | "none" | null;
+      toolNames: string[];
+    }
+  | {
+      kind: "assistant";
+      turn: number;
+      step: number;
+      content: string | null;
+      toolCalls: TraceToolCall[];
+    }
+  | {
+      kind: "tool";
+      turn: number;
+      step: number;
+      callId: string;
+      name: string;
+      arguments: string;
+      outcome: "returned" | "failed";
+      result: string;
+    };
+
+function traceToolCalls(calls: ChatMessage["tool_calls"]): TraceToolCall[] {
+  return (calls ?? []).map((call) => ({
+    id: call.id,
+    name: call.function.name,
+    arguments: call.function.arguments,
+  }));
+}
+
 // Loose throughout: tool calls go back to the model as received (Gemini puts
 // its thought signature in fields named nowhere here), and gatewayReportedCost
 // reads cost fields from the raw body.
@@ -301,6 +344,7 @@ const ChatResponseSchema = z.looseObject({
     })
     .nullish(),
 });
+const ResponseUsageSchema = z.object({ usage: ChatResponseSchema.shape.usage });
 
 const ToolArgsSchema = z.record(z.string(), z.unknown());
 
@@ -314,6 +358,12 @@ export async function runOpenBaseline(params: {
   model: string;
   systemPrompt: string;
   inlineLibrary?: boolean;
+  // Await persistence before another provider call, including on failed answers.
+  onRequestPaid?: (request: {
+    usage: Usage;
+    costUsd: number;
+  }) => void | Promise<void>;
+  onEvent?: (event: OpenBaselineEvent) => void | Promise<void>;
 }): Promise<SystemRun> {
   const { item, model } = params;
   const inline = params.inlineLibrary === true;
@@ -381,42 +431,75 @@ export async function runOpenBaseline(params: {
           },
         },
       });
-      let body;
-      try {
-        body = await gatewayPost(
+      const request = async (withTools: boolean) => {
+        await params.onEvent?.({
+          kind: "request",
+          turn: index + 1,
+          step: step + 1,
+          model,
+          messages: messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            toolCalls: traceToolCalls(message.tool_calls),
+            toolCallId: message.tool_call_id ?? null,
+          })),
+          toolChoice: withTools ? (lastStep ? "none" : "auto") : null,
+          toolNames: withTools ? tools.map((tool) => tool.function.name) : [],
+        });
+        return benchPostJson(
           "/v1/chat/completions",
-          chatRequest(true),
-          ChatResponseSchema
+          chatRequest(withTools),
+          z.unknown()
         );
+      };
+      let raw;
+      try {
+        raw = await request(true);
       } catch (error) {
         // Some models accept only tool_choice "auto". On the last step, ask
         // again without tools so the model must answer in text.
         if (!lastStep || !refusesToolChoiceNone(error)) throw error;
-        body = await gatewayPost(
-          "/v1/chat/completions",
-          chatRequest(false),
-          ChatResponseSchema
-        );
+        raw = await request(false);
       }
+      // Usage can be valid even when the answer shape is not. Record it before
+      // full validation so an unsuccessful answer cannot hide a paid response.
+      const responseUsage = ResponseUsageSchema.safeParse(raw);
+      const receivedUsage = responseUsage.success
+        ? responseUsage.data.usage
+        : null;
       const stepUsage = {
-        inputTokens: body.usage?.prompt_tokens ?? 0,
-        outputTokens: body.usage?.completion_tokens ?? 0,
-        cacheReadTokens: body.usage?.prompt_tokens_details?.cached_tokens ?? 0,
+        inputTokens: receivedUsage?.prompt_tokens ?? 0,
+        outputTokens: receivedUsage?.completion_tokens ?? 0,
+        cacheReadTokens:
+          receivedUsage?.prompt_tokens_details?.cached_tokens ?? 0,
         cacheWriteTokens:
-          body.usage?.prompt_tokens_details?.cache_write_tokens ?? 0,
+          receivedUsage?.prompt_tokens_details?.cache_write_tokens ?? 0,
         webSearches: 0,
       };
       addUsage(usage, stepUsage);
-      const reported = gatewayReportedCost(body);
+      const reported = gatewayReportedCost(raw);
       reportedUsd += reported ?? 0;
       // Never trust a low report alone: a request on our own provider key
       // (BYOK) reports $0, which let a run blow through --max-usd.
-      estimatedUsd += Math.max(
+      const stepCostUsd = Math.max(
         reported ?? 0,
         estimateUsd(model, stepUsage) ?? 0
       );
+      estimatedUsd += stepCostUsd;
+      await params.onRequestPaid?.({
+        usage: { ...stepUsage },
+        costUsd: stepCostUsd,
+      });
+      const body = ChatResponseSchema.parse(raw);
       const message = body.choices[0]?.message;
       if (!message) throw new Error("Gateway returned no choices");
+      await params.onEvent?.({
+        kind: "assistant",
+        turn: index + 1,
+        step: step + 1,
+        content: message.content ?? null,
+        toolCalls: traceToolCalls(message.tool_calls ?? undefined),
+      });
       messages.push({
         role: "assistant",
         content: message.content ?? null,
@@ -457,7 +540,28 @@ export async function runOpenBaseline(params: {
           usage.webSearches += 1;
           estimatedUsd += WEB_SEARCH_USD;
           searchQueries.push(String(args.query ?? ""));
-          result = await webSearch(String(args.query ?? ""));
+          try {
+            result = await webSearch(String(args.query ?? ""));
+          } catch (error) {
+            await params.onEvent?.({
+              kind: "tool",
+              turn: index + 1,
+              step: step + 1,
+              callId: call.id,
+              name,
+              arguments: call.function.arguments,
+              outcome: "failed",
+              result: JSON.stringify({
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            });
+            throw error;
+          } finally {
+            await params.onRequestPaid?.({
+              usage: { ...emptyUsage(), webSearches: 1 },
+              costUsd: WEB_SEARCH_USD,
+            });
+          }
         } else if (!library) {
           result = { error: "No library is attached to this task." };
         } else if (name === "list_documents") {
@@ -479,10 +583,21 @@ export async function runOpenBaseline(params: {
         } else {
           result = { error: `Unknown tool ${name}` };
         }
+        const resultText = JSON.stringify(result);
+        await params.onEvent?.({
+          kind: "tool",
+          turn: index + 1,
+          step: step + 1,
+          callId: call.id,
+          name,
+          arguments: call.function.arguments,
+          outcome: "returned",
+          result: resultText,
+        });
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: JSON.stringify(result),
+          content: resultText,
         });
       }
     }
